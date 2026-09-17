@@ -8,6 +8,12 @@ const GEMINI_MODEL = "gemini-3.6-flash";
 
 const analysisPrompt = `You are ClaimWise, an insurance document analyst. Analyze only the uploaded insurance document. It may be a PDF, JPG, PNG, or DOCX file. Return valid JSON and no markdown with this exact shape:
 {
+  "insurance_category": "Car/Vehicle Insurance"|"Health Insurance"|"Life Insurance"|"Travel Insurance"|"Home Insurance"|"Term Insurance"|"Business Insurance"|"Other"|null,
+  "insurance_category_confidence": "high"|"medium"|"low"|null,
+  "claim_scenarios": [{"name": string, "when_it_applies": string, "page": number|null}],
+  "coverage_summary": string|null,
+  "provided_documents": [{"name": string, "evidence": string, "page": number|null}],
+  "missing_claim_information": [{"name": string, "reason": string, "page": number|null}],
   "insurer_name": string|null,
   "policy_name": string|null,
   "policy_number": string|null,
@@ -23,9 +29,10 @@ const analysisPrompt = `You are ClaimWise, an insurance document analyst. Analyz
   "claim_requirements": [{"name": string, "details": string, "page": number|null}],
   "important_clauses": [{"title": string, "summary": string, "page": number|null}],
   "recommended_actions": [string],
-  "review_flags": [string]
+  "review_flags": [string],
+  "next_steps": [string]
 }
-Use null or an empty array when the document does not contain a value. Never guess. Preserve page numbers when visible. This is informational document extraction, not a claim decision.`;
+Use null or an empty array when the document does not contain a value. Never guess. Preserve page numbers when visible. Distinguish documents explicitly shown or mentioned in the uploaded document from documents that are merely commonly requested. For missing_claim_information, include only information or documents the policy explicitly requires or that are necessary to evaluate an identified claim scenario; if the policy does not say, state that it cannot be determined instead of inventing a requirement. Claim scenarios must be grounded in the policy wording. This is informational document extraction, not a claim decision.`;
 
 function parseModelJson(text: string) {
   const cleaned = text.replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim();
