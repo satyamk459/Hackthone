@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
-const GEMINI_MODEL = "gemini-3.6-flash";
+const GEMINI_MODEL = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
 
 const analysisPrompt = `You are ClaimWise, an insurance document analyst. Analyze only the uploaded insurance document. It may be a PDF, JPG, PNG, or DOCX file. Return valid JSON and no markdown with this exact shape:
 {
@@ -73,7 +73,8 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
 
     const bytes = Buffer.from(await file.arrayBuffer()).toString("base64");
     const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: GEMINI_MODEL });
-    const result = await model.generateContent([{ inlineData: { mimeType: document.mime_type, data: bytes } }, analysisPrompt]);
+    const mimeType = document.mime_type || "application/pdf";
+    const result = await model.generateContent([{ inlineData: { mimeType, data: bytes } }, analysisPrompt]);
     const analysis = parseModelJson(result.response.text());
 
     const { error: analysisError } = await supabase.from("policy_analysis").upsert({
@@ -92,8 +93,9 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     return NextResponse.json({ status: "completed", analysis });
   } catch (error) {
     const message = error instanceof Error ? error.message : "The policy could not be analyzed.";
+    console.error("Policy analysis failed", { policyId, documentId: document.id, model: GEMINI_MODEL, message });
     await supabase.from("policy_documents").update({ processing_status: "failed", processing_error: message }).eq("id", document.id);
     await supabase.from("policies").update({ status: "failed" }).eq("id", policyId).eq("user_id", authData.user.id);
-    return NextResponse.json({ error: "We could not analyze this document. Try a readable PDF, image, or DOCX file." }, { status: 502 });
+    return NextResponse.json({ error: "We could not analyze this document. Check the uploaded file and try again." }, { status: 502 });
   }
 }

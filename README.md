@@ -64,7 +64,7 @@ https://*-YOUR-TEAM.vercel.app/auth/callback
 
 Configure the Google provider in Supabase if Google sign-in is enabled, and add the production callback URL shown by Supabase to the Google OAuth client.
 
-Before the first production deploy, confirm that the Gemini API key can access the configured model `gemini-3.6-flash`. The document processing route is synchronous and has a 60-second serverless limit. The current upload route sends the file through the serverless function, so files above Vercel's request-body limit can fail even though the UI says 30 MB; large-file support should use direct browser-to-Supabase Storage uploads before enabling that size in production.
+The Gemini model defaults to `gemini-2.5-flash`; set the optional `GEMINI_MODEL` variable only to a model enabled for your API key. The document processing route is synchronous and has a 60-second serverless limit. Files upload directly from the browser to private Supabase Storage, avoiding Vercel request-body limits.
 
 Run these checks locally before pushing changes:
 

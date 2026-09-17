@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
-const GEMINI_MODEL = "gemini-3.6-flash";
+const GEMINI_MODEL = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id: policyId } = await params;
@@ -45,7 +45,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     await supabase.from("activity_history").insert({ user_id: authData.user.id, policy_id: policyId, event_type: "question_asked", event_data: { question } });
 
     return NextResponse.json({ answer, sources: chunks?.map((chunk) => ({ page: chunk.page_number, section: chunk.section_title })) ?? [] });
-  } catch {
+  } catch (error) {
+    console.error("Policy chat failed", { policyId, model: GEMINI_MODEL, message: error instanceof Error ? error.message : "Unknown error" });
     return NextResponse.json({ error: "ClaimWise could not answer this question right now." }, { status: 502 });
   }
 }

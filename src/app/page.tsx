@@ -62,12 +62,14 @@ export default function Home() {
       return;
     }
 
+    const extension = file.name.toLowerCase().split(".").pop();
+    const mimeType = file.type || (extension === "jpg" || extension === "jpeg" ? "image/jpeg" : extension === "png" ? "image/png" : extension === "docx" ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : "application/pdf");
     setUploading(true);
     setFileName(file.name);
     const prepareResponse = await fetch("/api/policies/upload/prepare", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fileName: file.name, mimeType: file.type, fileSize: file.size }),
+      body: JSON.stringify({ fileName: file.name, mimeType, fileSize: file.size }),
     });
     const prepared = await prepareResponse.json();
     if (!prepareResponse.ok) {
@@ -79,7 +81,7 @@ export default function Home() {
 
     const storageUpload = await createSupabaseBrowserClient().storage
       .from("insurance-documents")
-      .upload(prepared.storagePath, file, { contentType: file.type, upsert: false });
+      .upload(prepared.storagePath, file, { contentType: mimeType, upsert: false });
     if (storageUpload.error) {
       setUploading(false);
       setFileName("");
