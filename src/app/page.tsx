@@ -64,9 +64,34 @@ export default function Home() {
 
     setUploading(true);
     setFileName(file.name);
-    const formData = new FormData();
-    formData.append("file", file);
-    const response = await fetch("/api/policies/upload", { method: "POST", body: formData });
+    const prepareResponse = await fetch("/api/policies/upload/prepare", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileName: file.name, mimeType: file.type, fileSize: file.size }),
+    });
+    const prepared = await prepareResponse.json();
+    if (!prepareResponse.ok) {
+      setUploading(false);
+      setFileName("");
+      setUploadError(prepared.error ?? "We could not prepare this policy upload.");
+      return;
+    }
+
+    const storageUpload = await createSupabaseBrowserClient().storage
+      .from("insurance-documents")
+      .upload(prepared.storagePath, file, { contentType: file.type, upsert: false });
+    if (storageUpload.error) {
+      setUploading(false);
+      setFileName("");
+      setUploadError("We could not store this policy document securely.");
+      return;
+    }
+
+    const response = await fetch("/api/policies/upload/complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(prepared),
+    });
     const result = await response.json();
     setUploading(false);
     if (!response.ok) {
