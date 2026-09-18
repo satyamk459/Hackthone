@@ -1,7 +1,7 @@
 create extension if not exists pgcrypto;
 create extension if not exists vector;
 
-create type public.processing_status as enum ('uploaded', 'queued', 'processing', 'extracting', 'analyzing', 'indexing', 'completed', 'failed');
+create type public.processing_status as enum ('uploaded', 'queued', 'processing', 'extracting', 'analyzing', 'indexing', 'completed', 'failed', 'needs_retry');
 create type public.chat_role as enum ('user', 'assistant');
 
 create table public.profiles (

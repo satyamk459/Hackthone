@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI, GenerativeModel } from "@google/generative-ai";
 
-export const GEMINI_MODEL = "gemini-3.6-flash";
+export const GEMINI_MODEL = process.env.GEMINI_MODEL ?? "gemini-3.6-flash";
 
 export const GEMINI_SYSTEM_INSTRUCTION =
   "You are ClaimWise AI, an insurance claims assistant. Reply in the same language as the user when answering later questions. Explain insurance policies, coverage, exclusions, claim eligibility, required documents, and next steps simply. Base conclusions on the uploaded documents, never guess, and clearly say when something cannot be determined. This is informational guidance, not a claim decision.";
@@ -53,11 +53,13 @@ export async function callGeminiWithRetry<T>(
  */
 export function getGeminiModel(
   apiKey: string,
-  systemInstruction: string = GEMINI_SYSTEM_INSTRUCTION
+  systemInstruction: string = GEMINI_SYSTEM_INSTRUCTION,
+  options: { json?: boolean } = {}
 ): GenerativeModel {
   return new GoogleGenerativeAI(apiKey).getGenerativeModel({
     model: GEMINI_MODEL,
     systemInstruction,
+    ...(options.json ? { generationConfig: { responseMimeType: "application/json" } } : {}),
   });
 }
 
