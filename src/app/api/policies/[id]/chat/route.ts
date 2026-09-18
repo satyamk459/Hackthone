@@ -58,18 +58,24 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           }
         }
         if (!answer.trim()) throw new Error("Gemini did not return an answer.");
-        const session = history ?? (await supabase.from("chat_sessions").insert({ policy_id: policyId, user_id: authData.user.id }).select("id").single()).data;
-        if (!session) throw new Error("Chat session could not be created.");
-        await supabase.from("chat_messages").insert([
-          { session_id: session.id, user_id: authData.user.id, role: "user", content: question },
-          { session_id: session.id, user_id: authData.user.id, role: "assistant", content: answer, sources: chunks?.map((chunk) => ({ page: chunk.page_number, section: chunk.section_title })) ?? [] },
-        ]);
-        await supabase.from("activity_history").insert({ user_id: authData.user.id, policy_id: policyId, event_type: "question_asked", event_data: { question, language } });
+        try {
+          const session = history ?? (await supabase.from("chat_sessions").insert({ policy_id: policyId, user_id: authData.user.id }).select("id").single()).data;
+          if (!session) throw new Error("Chat session could not be created.");
+          const { error: messageError } = await supabase.from("chat_messages").insert([
+            { session_id: session.id, user_id: authData.user.id, role: "user", content: question },
+            { session_id: session.id, user_id: authData.user.id, role: "assistant", content: answer, sources: chunks?.map((chunk) => ({ page: chunk.page_number, section: chunk.section_title })) ?? [] },
+          ]);
+          if (messageError) throw messageError;
+          const { error: activityError } = await supabase.from("activity_history").insert({ user_id: authData.user.id, policy_id: policyId, event_type: "question_asked", event_data: { question, language } });
+          if (activityError) throw activityError;
+        } catch (persistenceError) {
+          console.error("Policy chat answer saved with warnings", { policyId, message: persistenceError instanceof Error ? persistenceError.message : "Conversation history could not be saved" });
+        }
         controller.close();
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown Gemini error";
         console.error("Policy chat failed", { policyId, model: GEMINI_MODEL, message });
-        const detail = process.env.NODE_ENV === "development" ? `\n\n[Development error: ${message}]` : "\n\n[ClaimWise could not complete this answer. Please try again.]";
+        const detail = `\n\n[AI error: ${message}]`;
         controller.enqueue(encoder.encode(detail));
         controller.close();
       }
