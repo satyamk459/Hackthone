@@ -9,6 +9,10 @@ import { DeletePolicyButton } from "@/components/DeletePolicyButton";
 
 type Policy = { id: string; insurer_name: string | null; policy_name: string | null; policy_number: string | null; policy_type: string | null; status: string; policy_documents?: { file_name: string; processing_status: string }[] };
 
+function LandingPage({ onSignIn }: { onSignIn: () => void }) {
+  return <main className="landing-page"><header className="landing-nav"><Link className="landing-brand" href="/"><span className="brand-mark">C</span><span>claimwise</span></Link><nav aria-label="Landing page navigation"><a href="#how-it-works">How it works</a><a href="#security">Security</a><a href="#support">Support</a></nav><button className="landing-login" onClick={onSignIn}>Log in</button><button className="landing-cta" onClick={onSignIn}>File a claim</button></header><section className="landing-hero"><div className="landing-copy"><p className="landing-kicker">CLAIMWISE AI · INSURANCE, MADE LEGIBLE</p><h1>A simpler way<br />to understand claims.</h1><p>Upload your policy and supporting documents. ClaimWise AI turns complex insurance language into clear coverage, claim requirements, and next steps.</p><div className="landing-actions"><button className="landing-cta" onClick={onSignIn}>File a claim <span>→</span></button><a href="#how-it-works">See how it works <span>→</span></a></div><div className="landing-trust" id="security"><div><span>ϟ</span><strong>Fast processing</strong><small>Updates as your documents are analyzed</small></div><div><span>◇</span><strong>Private by design</strong><small>Your files stay in your Supabase account</small></div><div><span>♙</span><strong>Clear guidance</strong><small>Know what to do next, without the jargon</small></div></div></div><div className="landing-art" aria-label="Illustration of a protected insurance claim"><div className="art-sun" /><div className="art-city"><i /><i /><i /><i /><i /></div><div className="art-house"><span /><b /><em /></div><div className="art-person"><span /><b /><i /></div><div className="art-sheet"><strong>CLAIM</strong><span>✓</span><span>✓</span><span>✓</span></div><div className="art-shield">✓</div></div></section><section className="landing-bottom" id="how-it-works"><span>01</span><strong>Upload your documents</strong><span>02</span><strong>Understand your cover</strong><span>03</span><strong>Move forward with confidence</strong></section></main>;
+}
+
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
@@ -48,6 +52,9 @@ export default function Home() {
   useEffect(() => {
     if (new URLSearchParams(window.location.search).get("upload") === "1" && authenticated) inputRef.current?.click();
   }, [authenticated]);
+
+  if (!authReady) return <main className="landing-page landing-loading"><div className="landing-brand"><span className="brand-mark">C</span><span>claimwise</span></div></main>;
+  if (!authenticated) return <LandingPage onSignIn={() => router.push("/login")} />;
 
   function beginUpload() {
     if (!authReady || !authenticated) {
@@ -102,7 +109,7 @@ export default function Home() {
     setFileName("Ready - analysis complete");
     const policiesResponse = await fetch("/api/policies/upload");
     if (policiesResponse.ok) setPolicies((await policiesResponse.json()).policies ?? []);
-    router.push(`/policies/${latestResult.policyId}/analysis`);
+    router.push("/");
   }
 
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -122,6 +129,8 @@ export default function Home() {
       setUploadError(error instanceof Error ? error.message : "This upload could not be completed.");
     });
   }
+
+  if (authenticated && policies.length === 0) return <main className="onboarding-page"><div className="onboarding-brand"><Link className="landing-brand" href="/"><span className="brand-mark">C</span><span>claimwise</span></Link><span className="onboarding-step">STEP 1 OF 2 · SET UP YOUR COVER</span></div><section className="onboarding-copy"><p className="landing-kicker">WELCOME TO CLAIMWISE</p><h1>Start with your<br /><em>documents.</em></h1><p>Upload your policy and any supporting files. We will identify the insurance type, explain the cover, and prepare your claim checklist.</p></section><div className={`upload-dropzone onboarding-dropzone ${isDropActive ? "drop-active" : ""}`} onDragOver={(event) => { event.preventDefault(); setIsDropActive(true); }} onDragLeave={() => setIsDropActive(false)} onDrop={handleDrop} onClick={beginUpload} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") beginUpload(); }}><span className="upload-drop-icon">↑</span><strong>Drop your documents here</strong><span>Policy PDF, JPG, PNG, or DOCX · up to 30 MB each · multiple files supported</span>{uploadStage !== "idle" && <div className="upload-progress" aria-live="polite"><div className="upload-progress-label"><span>{uploadStage === "uploading" ? "Uploading..." : uploadStage === "extracting" ? "Extracting text..." : "Ready ✓"}</span><span>{uploadProgress}%</span></div><div className="upload-progress-track"><span style={{ width: `${uploadProgress}%` }} /></div></div>}</div><input ref={inputRef} type="file" accept={getUploadAcceptAttribute()} multiple onChange={handleFileChange} hidden />{uploadError && <p className="onboarding-error" role="alert">{uploadError}</p>}<p className="onboarding-note">Your documents are private and protected by Supabase authentication.</p></main>;
 
   return (
     <div className="app-shell" suppressHydrationWarning>

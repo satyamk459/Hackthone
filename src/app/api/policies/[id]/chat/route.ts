@@ -41,10 +41,21 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       let answer = "";
       try {
         const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: GEMINI_MODEL, systemInstruction: GEMINI_SYSTEM_INSTRUCTION });
-        const result = await model.generateContentStream(prompt);
-        for await (const chunk of result.stream) {
-          const text = chunk.text();
-          if (text) { answer += text; controller.enqueue(encoder.encode(text)); }
+        try {
+          const result = await model.generateContentStream(prompt);
+          for await (const chunk of result.stream) {
+            const text = chunk.text();
+            if (text) { answer += text; controller.enqueue(encoder.encode(text)); }
+          }
+        } catch (streamError) {
+          console.warn("Gemini streaming failed; trying non-streaming fallback", { policyId, message: streamError instanceof Error ? streamError.message : "Unknown error" });
+          if (!answer) {
+            const fallback = await model.generateContent(prompt);
+            answer = fallback.response.text();
+            if (answer) controller.enqueue(encoder.encode(answer));
+          } else {
+            controller.enqueue(encoder.encode("\n\n[The response was interrupted. Please try again.]"));
+          }
         }
         if (!answer.trim()) throw new Error("Gemini did not return an answer.");
         const session = history ?? (await supabase.from("chat_sessions").insert({ policy_id: policyId, user_id: authData.user.id }).select("id").single()).data;
@@ -56,8 +67,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         await supabase.from("activity_history").insert({ user_id: authData.user.id, policy_id: policyId, event_type: "question_asked", event_data: { question, language } });
         controller.close();
       } catch (error) {
-        console.error("Policy chat failed", { policyId, model: GEMINI_MODEL, message: error instanceof Error ? error.message : "Unknown error" });
-        controller.enqueue(encoder.encode("\n\n[ClaimWise could not finish this answer. Please try again.]"));
+        const message = error instanceof Error ? error.message : "Unknown Gemini error";
+        console.error("Policy chat failed", { policyId, model: GEMINI_MODEL, message });
+        const detail = process.env.NODE_ENV === "development" ? `\n\n[Development error: ${message}]` : "\n\n[ClaimWise could not complete this answer. Please try again.]";
+        controller.enqueue(encoder.encode(detail));
         controller.close();
       }
     },

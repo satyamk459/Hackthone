@@ -57,6 +57,11 @@ export function FloatingChat() {
       answer += decoder.decode(value, { stream: true });
       setMessages((current) => current.map((message, index) => index === current.length - 1 ? { ...message, content: answer } : message));
     }
+    const errorMarker = answer.match(/\n\n\[((?:Development error:|ClaimWise could not|The response was interrupted)[^\]]*)\]/);
+    if (errorMarker) {
+      setMessages((current) => current.slice(0, -1));
+      setError(errorMarker[1]);
+    }
     setLoading(false);
   }
 
