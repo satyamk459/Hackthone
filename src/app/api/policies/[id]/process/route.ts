@@ -1,11 +1,9 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { callGeminiWithRetry, getGeminiModel, GEMINI_MODEL, toUserFacingError } from "@/lib/gemini";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
-const GEMINI_MODEL = "gemini-3.6-flash";
-const GEMINI_SYSTEM_INSTRUCTION = "You are ClaimWise AI, an insurance claims assistant. Reply in the same language as the user when answering later questions. Explain insurance policies, coverage, exclusions, claim eligibility, required documents, and next steps simply. Base conclusions on the uploaded documents, never guess, and clearly say when something cannot be determined. This is informational guidance, not a claim decision.";
 
 const analysisPrompt = `You are ClaimWise, an insurance document analyst. Analyze only the uploaded insurance document. It may be a PDF, JPG, PNG, or DOCX file. Return valid JSON and no markdown with this exact shape:
 {
@@ -67,14 +65,20 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new Error("Gemini is not configured on the server.");
 
-    const uploadedDocuments = [];
+    const uploadedDocuments: { inlineData: { mimeType: string; data: string } }[] = [];
     for (const item of document) {
       const { data: file, error: downloadError } = await supabase.storage.from("insurance-documents").download(item.storage_path);
       if (downloadError || !file) throw new Error(`The stored document ${item.file_name} could not be read.`);
       uploadedDocuments.push({ inlineData: { mimeType: item.mime_type || "application/pdf", data: Buffer.from(await file.arrayBuffer()).toString("base64") } });
     }
-    const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: GEMINI_MODEL, systemInstruction: GEMINI_SYSTEM_INSTRUCTION });
-    const result = await model.generateContent([...uploadedDocuments, analysisPrompt]);
+
+    const model = getGeminiModel(apiKey);
+
+    // Retry with exponential backoff on 503/429
+    const result = await callGeminiWithRetry(() =>
+      model.generateContent([...uploadedDocuments, analysisPrompt])
+    );
+
     const analysis = parseModelJson(result.response.text());
 
     const { error: analysisError } = await supabase.from("policy_analysis").upsert({
@@ -94,8 +98,19 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
   } catch (error) {
     const message = error instanceof Error ? error.message : "The policy could not be analyzed.";
     console.error("Policy analysis failed", { policyId, documentIds: document?.map((item) => item.id), model: GEMINI_MODEL, message });
-    await supabase.from("policy_documents").update({ processing_status: "failed", processing_error: message }).eq("policy_id", policyId).eq("user_id", authData.user.id);
-    await supabase.from("policies").update({ status: "failed" }).eq("id", policyId).eq("user_id", authData.user.id);
-    return NextResponse.json({ error: "We could not analyze this document. Check the uploaded file and try again." }, { status: 502 });
+
+    // Don't delete the uploaded document — keep it safe for retry
+    // Set status to "needs_retry" instead of "failed" for retryable errors
+    const userError = toUserFacingError(error);
+    const retryable = userError.code === "MODEL_BUSY";
+    const dbStatus = retryable ? "needs_retry" : "failed";
+
+    await supabase.from("policy_documents").update({ processing_status: dbStatus, processing_error: message }).eq("policy_id", policyId).eq("user_id", authData.user.id);
+    await supabase.from("policies").update({ status: dbStatus }).eq("id", policyId).eq("user_id", authData.user.id);
+
+    return NextResponse.json(
+      { error: userError.message, code: userError.code, retryable },
+      { status: userError.status }
+    );
   }
 }

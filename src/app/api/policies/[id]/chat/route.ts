@@ -1,11 +1,11 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { callGeminiWithRetry, getGeminiModel, GEMINI_MODEL } from "@/lib/gemini";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
-const GEMINI_MODEL = "gemini-3.6-flash";
-const GEMINI_SYSTEM_INSTRUCTION = "You are ClaimWise AI, an insurance claims assistant. Reply in the same language as the user. Explain insurance policies, coverage, exclusions, claim eligibility, required documents, and next steps simply. If a question is vague, ask a clarifying question instead of guessing. Base policy-specific answers on the uploaded policy context and clearly say when information cannot be determined. This is informational guidance, not a claim decision.";
+
+const CHAT_SYSTEM_INSTRUCTION = "You are ClaimWise AI, an insurance claims assistant. Reply in the same language as the user. Explain insurance policies, coverage, exclusions, claim eligibility, required documents, and next steps simply. If a question is vague, ask a clarifying question instead of guessing. Base policy-specific answers on the uploaded policy context and clearly say when information cannot be determined. This is informational guidance, not a claim decision.";
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id: policyId } = await params;
@@ -40,17 +40,23 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       const encoder = new TextEncoder();
       let answer = "";
       try {
-        const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: GEMINI_MODEL, systemInstruction: GEMINI_SYSTEM_INSTRUCTION });
+        const model = getGeminiModel(apiKey, CHAT_SYSTEM_INSTRUCTION);
         try {
-          const result = await model.generateContentStream(prompt);
+          // Retry streaming call with exponential backoff on 503
+          const result = await callGeminiWithRetry(() =>
+            model.generateContentStream(prompt)
+          );
           for await (const chunk of result.stream) {
             const text = chunk.text();
             if (text) { answer += text; controller.enqueue(encoder.encode(text)); }
           }
         } catch (streamError) {
-          console.warn("Gemini streaming failed; trying non-streaming fallback", { policyId, message: streamError instanceof Error ? streamError.message : "Unknown error" });
+          console.warn("Gemini streaming failed; trying non-streaming fallback with retry", { policyId, message: streamError instanceof Error ? streamError.message : "Unknown error" });
           if (!answer) {
-            const fallback = await model.generateContent(prompt);
+            // Retry non-streaming fallback with exponential backoff on 503
+            const fallback = await callGeminiWithRetry(() =>
+              model.generateContent(prompt)
+            );
             answer = fallback.response.text();
             if (answer) controller.enqueue(encoder.encode(answer));
           } else {
