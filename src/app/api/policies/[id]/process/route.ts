@@ -4,8 +4,7 @@ import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
-const PRIMARY_GEMINI_MODEL = process.env.GEMINI_MODEL ?? "gemini-3.6-flash";
-const FALLBACK_GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_MODEL = "gemini-3.6-flash";
 
 const analysisPrompt = `You are ClaimWise, an insurance document analyst. Analyze only the uploaded insurance document. It may be a PDF, JPG, PNG, or DOCX file. Return valid JSON and no markdown with this exact shape:
 {
@@ -74,42 +73,27 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
 
     const bytes = Buffer.from(await file.arrayBuffer()).toString("base64");
     const mimeType = document.mime_type || "application/pdf";
-    const client = new GoogleGenerativeAI(apiKey);
-    const models = [...new Set([PRIMARY_GEMINI_MODEL, FALLBACK_GEMINI_MODEL])];
-    let analysis: ReturnType<typeof parseModelJson> | undefined;
-    let usedModel = PRIMARY_GEMINI_MODEL;
-    let lastModelError: unknown;
-    for (const modelName of models) {
-      try {
-        const model = client.getGenerativeModel({ model: modelName });
-        const result = await model.generateContent([{ inlineData: { mimeType, data: bytes } }, analysisPrompt]);
-        analysis = parseModelJson(result.response.text());
-        usedModel = modelName;
-        break;
-      } catch (error) {
-        lastModelError = error;
-        console.warn("Gemini model attempt failed", { policyId, documentId: document.id, model: modelName, message: error instanceof Error ? error.message : "Unknown error" });
-      }
-    }
-    if (!analysis) throw lastModelError instanceof Error ? lastModelError : new Error("Gemini did not return a usable analysis.");
+    const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: GEMINI_MODEL });
+    const result = await model.generateContent([{ inlineData: { mimeType, data: bytes } }, analysisPrompt]);
+    const analysis = parseModelJson(result.response.text());
 
     const { error: analysisError } = await supabase.from("policy_analysis").upsert({
       policy_id: policyId,
       version_id: document.version_id,
       analysis_json: analysis,
-      model_name: usedModel,
+      model_name: GEMINI_MODEL,
       analysis_version: "1",
     }, { onConflict: "policy_id,version_id" });
     if (analysisError) throw new Error("Analysis could not be saved.");
 
     await supabase.from("policy_documents").update({ processing_status: "completed", processed_at: new Date().toISOString(), processing_error: null }).eq("id", document.id);
     await supabase.from("policies").update({ status: "completed", insurer_name: analysis.insurer_name, policy_name: analysis.policy_name ?? undefined, policy_number: analysis.policy_number, policy_type: analysis.policy_type }).eq("id", policyId).eq("user_id", authData.user.id);
-    await supabase.from("activity_history").insert({ user_id: authData.user.id, policy_id: policyId, event_type: "analysis_completed", event_data: { model: usedModel } });
+    await supabase.from("activity_history").insert({ user_id: authData.user.id, policy_id: policyId, event_type: "analysis_completed", event_data: { model: GEMINI_MODEL } });
 
     return NextResponse.json({ status: "completed", analysis });
   } catch (error) {
     const message = error instanceof Error ? error.message : "The policy could not be analyzed.";
-    console.error("Policy analysis failed", { policyId, documentId: document.id, primaryModel: PRIMARY_GEMINI_MODEL, fallbackModel: FALLBACK_GEMINI_MODEL, message });
+    console.error("Policy analysis failed", { policyId, documentId: document.id, model: GEMINI_MODEL, message });
     await supabase.from("policy_documents").update({ processing_status: "failed", processing_error: message }).eq("id", document.id);
     await supabase.from("policies").update({ status: "failed" }).eq("id", policyId).eq("user_id", authData.user.id);
     return NextResponse.json({ error: "We could not analyze this document. Check the uploaded file and try again." }, { status: 502 });

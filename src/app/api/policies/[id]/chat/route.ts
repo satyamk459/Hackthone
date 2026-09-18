@@ -4,8 +4,7 @@ import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
-const PRIMARY_GEMINI_MODEL = process.env.GEMINI_MODEL ?? "gemini-3.6-flash";
-const FALLBACK_GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_MODEL = "gemini-3.6-flash";
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id: policyId } = await params;
@@ -32,21 +31,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const prompt = `You are ClaimWise, answering questions only about the user's selected insurance policy. Policy: ${policy.policy_name ?? "Unknown"} (${policy.insurer_name ?? "Unknown insurer"}).\n\nPolicy context:\n${context}\n\nQuestion: ${question}\n\nRules: use only the policy context, do not invent missing details, say you could not find sufficient information when needed, explain simply, and mention page numbers when present.`;
 
   try {
-    const client = new GoogleGenerativeAI(apiKey);
-    const models = [...new Set([PRIMARY_GEMINI_MODEL, FALLBACK_GEMINI_MODEL])];
-    let answer = "";
-    let lastModelError: unknown;
-    for (const modelName of models) {
-      try {
-        const result = await client.getGenerativeModel({ model: modelName }).generateContent(prompt);
-        answer = result.response.text();
-        if (answer.trim()) break;
-      } catch (error) {
-        lastModelError = error;
-        console.warn("Gemini chat model attempt failed", { policyId, model: modelName, message: error instanceof Error ? error.message : "Unknown error" });
-      }
-    }
-    if (!answer.trim()) throw lastModelError instanceof Error ? lastModelError : new Error("Gemini did not return an answer.");
+    const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: GEMINI_MODEL });
+    const result = await model.generateContent(prompt);
+    const answer = result.response.text();
+    if (!answer.trim()) throw new Error("Gemini did not return an answer.");
     const { data: existingSession } = await supabase.from("chat_sessions").select("id").eq("policy_id", policyId).eq("user_id", authData.user.id).order("created_at", { ascending: true }).limit(1).maybeSingle();
     const session = existingSession ?? (await supabase.from("chat_sessions").insert({ policy_id: policyId, user_id: authData.user.id }).select("id").single()).data;
     if (!session) throw new Error("Chat session could not be created.");
@@ -59,7 +47,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
     return NextResponse.json({ answer, sources: chunks?.map((chunk) => ({ page: chunk.page_number, section: chunk.section_title })) ?? [] });
   } catch (error) {
-    console.error("Policy chat failed", { policyId, primaryModel: PRIMARY_GEMINI_MODEL, fallbackModel: FALLBACK_GEMINI_MODEL, message: error instanceof Error ? error.message : "Unknown error" });
+    console.error("Policy chat failed", { policyId, model: GEMINI_MODEL, message: error instanceof Error ? error.message : "Unknown error" });
     return NextResponse.json({ error: "ClaimWise could not answer this question right now." }, { status: 502 });
   }
 }
