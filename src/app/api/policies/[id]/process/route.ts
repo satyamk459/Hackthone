@@ -2,6 +2,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { callGeminiWithRetry, getGeminiModel, GEMINI_MODEL, toUserFacingError } from "@/lib/gemini";
 import { NextResponse } from "next/server";
 import { extractTextFromDocument } from "@/lib/extractText";
+import type { Part } from "@google/generative-ai";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -46,6 +47,22 @@ function parseModelJson(text: string) {
   return JSON.parse(cleaned.slice(jsonStart, jsonEnd + 1));
 }
 
+function normalizeGeminiMimeType(mimeType: string | null, fileName: string) {
+  const lowerName = fileName.toLowerCase();
+  if (mimeType === "application/pdf" || lowerName.endsWith(".pdf")) return "application/pdf";
+  if (mimeType === "image/png" || lowerName.endsWith(".png")) return "image/png";
+  if (mimeType === "image/jpeg" || lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg")) return "image/jpeg";
+  if (
+    mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    lowerName.endsWith(".docx")
+  ) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  return mimeType || "application/octet-stream";
+}
+
+function canSendInlineToGemini(mimeType: string) {
+  return mimeType === "application/pdf" || mimeType === "image/png" || mimeType === "image/jpeg";
+}
+
 export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id: policyId } = await params;
   const supabase = await createSupabaseServerClient();
@@ -73,14 +90,16 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new Error("GEMINI_API_KEY environment variable is not set. Please add it to your .env file.");
 
-    // Extract text from each document with detailed logging
-    const extractedContents: string[] = [];
+    const contentParts: (string | Part)[] = [analysisPrompt];
+    let usableDocumentCount = 0;
+
     for (const item of document) {
+      const mimeType = normalizeGeminiMimeType(item.mime_type, item.file_name);
       console.log("Processing document for analysis", {
         policyId,
         documentId: item.id,
         fileName: item.file_name,
-        mimeType: item.mime_type,
+        mimeType,
         storagePath: item.storage_path,
       });
 
@@ -105,48 +124,54 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
         bufferSize: buffer.length,
       });
 
-      // Extract text from the document
-      const extraction = await extractTextFromDocument(buffer, item.mime_type || "application/pdf", item.file_name);
+      if (canSendInlineToGemini(mimeType)) {
+        contentParts.push(`=== Attached document: ${item.file_name} (${mimeType}) ===`);
+        contentParts.push({
+          inlineData: {
+            mimeType,
+            data: buffer.toString("base64"),
+          },
+        });
+        usableDocumentCount += 1;
+      }
 
-      console.log("Text extraction completed", {
-        policyId,
-        documentId: item.id,
-        fileName: item.file_name,
-        method: extraction.method,
-        textLength: extraction.text.length,
-        error: extraction.error,
-      });
+      if (mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+        const extraction = await extractTextFromDocument(buffer, mimeType, item.file_name);
 
-      if (extraction.text.trim()) {
-        extractedContents.push(`=== Document: ${item.file_name} ===\n${extraction.text}`);
-      } else if (extraction.error) {
-        console.warn("Text extraction failed, document may be image-based or unreadable", {
+        console.log("Text extraction completed", {
           policyId,
           documentId: item.id,
           fileName: item.file_name,
+          method: extraction.method,
+          textLength: extraction.text.length,
           error: extraction.error,
         });
-        // Still send to Gemini for vision-based analysis
-        extractedContents.push(`=== Document: ${item.file_name} ===\n[Document could not be extracted as text - see attached image]`);
+
+        if (!extraction.text.trim()) {
+          throw new Error(`Could not extract readable text from DOCX file ${item.file_name}.`);
+        }
+
+        contentParts.push(`=== Extracted text from ${item.file_name} ===\n${extraction.text}`);
+        usableDocumentCount += 1;
       }
     }
 
-    if (extractedContents.length === 0) {
-      console.error("No text could be extracted from any document", { policyId });
+    if (usableDocumentCount === 0) {
+      console.error("No usable document content could be prepared", { policyId });
       throw new Error("Could not extract readable text from any uploaded document. Please try a different format or quality.");
     }
 
-    console.log("Sending extracted content to Gemini", {
+    console.log("Sending document content to Gemini", {
       policyId,
       documentCount: document.length,
-      totalTextLength: extractedContents.join("\n\n").length,
+      contentPartCount: contentParts.length,
     });
 
     const model = getGeminiModel(apiKey, undefined, { json: true });
 
     // Retry with exponential backoff on 503/429
     const result = await callGeminiWithRetry(() =>
-      model.generateContent([analysisPrompt, ...extractedContents])
+      model.generateContent(contentParts)
     );
 
     const rawResponse = result.response.text();
