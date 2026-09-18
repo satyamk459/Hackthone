@@ -16,6 +16,7 @@ export function FloatingChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [language, setLanguage] = useState("auto");
 
   useEffect(() => {
     const supabase = createSupabaseBrowserClient();
@@ -39,19 +40,29 @@ export function FloatingChat() {
     setError("");
     setMessages((current) => [...current, { role: "user", content: trimmed }]);
     setLoading(true);
-    const response = await fetch(`/api/policies/${selectedPolicy}/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: trimmed }) });
-    const result = await response.json();
-    setLoading(false);
-    if (!response.ok) {
-      setError(result.error ?? "ClaimWise could not answer this question.");
+    const response = await fetch(`/api/policies/${selectedPolicy}/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: trimmed, language }) });
+    if (!response.ok || !response.body) {
+      const result = await response.json().catch(() => null);
+      setLoading(false);
+      setError(result?.error ?? "ClaimWise could not answer this question.");
       return;
     }
-    setMessages((current) => [...current, { role: "assistant", content: result.answer, sources: result.sources }]);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let answer = "";
+    setMessages((current) => [...current, { role: "assistant", content: "" }]);
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      answer += decoder.decode(value, { stream: true });
+      setMessages((current) => current.map((message, index) => index === current.length - 1 ? { ...message, content: answer } : message));
+    }
+    setLoading(false);
   }
 
   if (!authenticated) return null;
   return <>
     <button className="floating-chat-button" type="button" onClick={() => setOpen((value) => !value)} aria-label="Open ClaimWise AI chat">✦</button>
-    {open && <section className="floating-chat-panel" aria-label="ClaimWise AI chat"><header><div><strong>ClaimWise AI</strong><small>Ask about your policy</small></div><button type="button" onClick={() => setOpen(false)} aria-label="Close chat">×</button></header>{policies.length ? <><label className="chat-policy-select">Policy<select value={selectedPolicy} onChange={(event) => { setSelectedPolicy(event.target.value); setMessages([]); }}><option value="">Select a policy</option>{policies.map((policy) => <option value={policy.id} key={policy.id}>{policy.policy_name ?? policy.insurer_name ?? "Uploaded policy"}</option>)}</select></label><div className="floating-chat-messages">{messages.length === 0 && <p className="floating-chat-empty">Ask about coverage, exclusions, waiting periods, or claim documents.</p>}{messages.map((message, index) => <article className={`chat-message ${message.role}`} key={`${message.role}-${index}`}><small>{message.role === "user" ? "You" : "ClaimWise AI"}</small><p>{message.content}</p>{message.sources?.length ? <div className="chat-sources">{message.sources.map((source, sourceIndex) => <span key={sourceIndex}>Page {source.page ?? "?"}{source.section ? ` · ${source.section}` : ""}</span>)}</div> : null}</article>)}{loading && <article className="chat-message assistant"><small>ClaimWise AI</small><p>Reading your policy...</p></article>}</div><form className="chat-form" onSubmit={ask}><input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Ask a policy question..." aria-label="Ask a policy question" /><button className="primary-button" type="submit" disabled={!selectedPolicy || loading || !question.trim()}>Ask</button></form>{error && <p className="chat-error">{error}</p>}</> : <div className="floating-chat-empty"><p>Upload a policy first to ask evidence-based questions.</p><Link href="/">Go to overview</Link></div>}</section>}
+    {open && <section className="floating-chat-panel" aria-label="ClaimWise AI chat"><header><div><strong>ClaimWise AI</strong><small>Ask about your policy</small></div><button type="button" onClick={() => setOpen(false)} aria-label="Close chat">×</button></header>{policies.length ? <><label className="chat-policy-select">Policy<select value={selectedPolicy} onChange={(event) => { setSelectedPolicy(event.target.value); setMessages([]); }}><option value="">Select a policy</option>{policies.map((policy) => <option value={policy.id} key={policy.id}>{policy.policy_name ?? policy.insurer_name ?? "Uploaded policy"}</option>)}</select></label><div className="floating-chat-messages">{messages.length === 0 && <p className="floating-chat-empty">Ask about coverage, exclusions, waiting periods, or claim documents.</p>}{messages.map((message, index) => <article className={`chat-message ${message.role}`} key={`${message.role}-${index}`}><small>{message.role === "user" ? "You" : "ClaimWise AI"}</small><p>{message.content || (loading ? "" : "No response returned.")}</p>{message.sources?.length ? <div className="chat-sources">{message.sources.map((source, sourceIndex) => <span key={sourceIndex}>Page {source.page ?? "?"}{source.section ? ` · ${source.section}` : ""}</span>)}</div> : null}</article>)}{loading && <article className="chat-message assistant typing-message"><small>ClaimWise AI</small><p><span /> <span /> <span /></p></article>}</div><form className="chat-form" onSubmit={ask}><select className="language-select" value={language} onChange={(event) => setLanguage(event.target.value)} aria-label="Response language"><option value="auto">Auto</option><option value="english">English</option><option value="hindi">Hindi</option></select><input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Ask a policy question..." aria-label="Ask a policy question" /><button className="primary-button" type="submit" disabled={!selectedPolicy || loading || !question.trim()}>Ask</button></form>{error && <p className="chat-error">{error}</p>}</> : <div className="floating-chat-empty"><p>Upload a policy first to ask evidence-based questions.</p><Link href="/">Go to overview</Link></div>}</section>}
   </>;
 }

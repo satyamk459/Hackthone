@@ -1,13 +1,13 @@
 "use client";
 
-import { ChangeEvent, useEffect, useRef, useState } from "react";
+import { ChangeEvent, DragEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { getUploadAcceptAttribute, validatePolicyFile } from "@/lib/upload";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { DeletePolicyButton } from "@/components/DeletePolicyButton";
 
-type Policy = { id: string; insurer_name: string | null; policy_name: string | null; policy_number: string | null; policy_type: string | null; status: string };
+type Policy = { id: string; insurer_name: string | null; policy_name: string | null; policy_number: string | null; policy_type: string | null; status: string; policy_documents?: { file_name: string; processing_status: string }[] };
 
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -15,6 +15,10 @@ export default function Home() {
   const [fileName, setFileName] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
+  const [uploadStage, setUploadStage] = useState<"idle" | "uploading" | "extracting" | "ready">("idle");
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [selectedPolicyId, setSelectedPolicyId] = useState("");
+  const [isDropActive, setIsDropActive] = useState(false);
   const [userName, setUserName] = useState("Your account");
   const [userEmail, setUserEmail] = useState("");
   const [userInitials, setUserInitials] = useState("U");
@@ -53,72 +57,70 @@ export default function Home() {
     inputRef.current?.click();
   }
 
-  async function acceptFile(file?: File) {
-    if (!file) return;
-    const validationError = validatePolicyFile(file);
-    setUploadError(validationError ?? "");
-    if (validationError) {
-      setFileName("");
-      return;
-    }
+  async function acceptFiles(files: File[]) {
+    if (!files.length) return;
+    const invalidFile = files.map(validatePolicyFile).find(Boolean);
+    setUploadError(invalidFile ?? "");
+    if (invalidFile) { setFileName(""); return; }
 
-    const extension = file.name.toLowerCase().split(".").pop();
-    const mimeType = file.type || (extension === "jpg" || extension === "jpeg" ? "image/jpeg" : extension === "png" ? "image/png" : extension === "docx" ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : "application/pdf");
+    setUploadStage("uploading");
+    setUploadProgress(0);
     setUploading(true);
-    setFileName(file.name);
-    const prepareResponse = await fetch("/api/policies/upload/prepare", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fileName: file.name, mimeType, fileSize: file.size }),
-    });
-    const prepared = await prepareResponse.json();
-    if (!prepareResponse.ok) {
-      setUploading(false);
-      setFileName("");
-      setUploadError(prepared.error ?? "We could not prepare this policy upload.");
-      return;
+    setFileName(files.length === 1 ? files[0].name : `${files.length} documents`);
+    let policyId = selectedPolicyId;
+    let latestResult: { policyId: string } | null = null;
+    for (const [index, file] of files.entries()) {
+      const fileExtension = file.name.toLowerCase().split(".").pop();
+      const mimeType = file.type || (fileExtension === "jpg" || fileExtension === "jpeg" ? "image/jpeg" : fileExtension === "png" ? "image/png" : fileExtension === "docx" ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : "application/pdf");
+      const prepareResponse = await fetch("/api/policies/upload/prepare", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fileName: file.name, mimeType, fileSize: file.size, policyId }) });
+      const prepared = await prepareResponse.json();
+      if (!prepareResponse.ok) throw new Error(prepared.error ?? "We could not prepare this policy upload.");
+      policyId = prepared.policyId;
+      const storageUpload = await createSupabaseBrowserClient().storage.from("insurance-documents").upload(prepared.storagePath, file, { contentType: mimeType, upsert: false });
+      if (storageUpload.error) throw new Error("We could not store this policy document securely.");
+      const response = await fetch("/api/policies/upload/complete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(prepared) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "We could not register this policy document.");
+      latestResult = result;
+      setUploadProgress(Math.round(((index + 1) / files.length) * 70));
     }
-
-    const storageUpload = await createSupabaseBrowserClient().storage
-      .from("insurance-documents")
-      .upload(prepared.storagePath, file, { contentType: mimeType, upsert: false });
-    if (storageUpload.error) {
-      setUploading(false);
-      setFileName("");
-      setUploadError("We could not store this policy document securely.");
-      return;
-    }
-
-    const response = await fetch("/api/policies/upload/complete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(prepared),
-    });
-    const result = await response.json();
-    setUploading(false);
-    if (!response.ok) {
-      setFileName("");
-      setUploadError(result.error ?? "We could not upload this policy.");
-      return;
-    }
-    setUploading(true);
-    setFileName(`Analyzing ${file.name}`);
-    const processResponse = await fetch(`/api/policies/${result.policyId}/process`, { method: "POST" });
+    if (!latestResult) throw new Error("No documents were uploaded.");
+    setUploadStage("extracting");
+    setFileName("Uploaded - analyzing your documents");
+    setUploadProgress(85);
+    const processResponse = await fetch(`/api/policies/${latestResult.policyId}/process`, { method: "POST" });
     const processResult = await processResponse.json();
     setUploading(false);
     if (!processResponse.ok) {
-      setUploadError(processResult.error ?? "The PDF was uploaded but could not be analyzed.");
+      setUploadStage("idle");
+      setUploadError(processResult.error ?? "Analysis could not be completed. Please try again.");
       return;
     }
+    setUploadStage("ready");
+    setUploadProgress(100);
     setUploadError("");
-    setFileName(`Analysis complete: ${file.name}`);
+    setFileName("Ready - analysis complete");
     const policiesResponse = await fetch("/api/policies/upload");
     if (policiesResponse.ok) setPolicies((await policiesResponse.json()).policies ?? []);
-    router.push(`/policies/${result.policyId}/analysis`);
+    router.push(`/policies/${latestResult.policyId}/analysis`);
   }
 
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    acceptFile(event.target.files?.[0]);
+    acceptFiles(Array.from(event.target.files ?? [])).catch((error) => {
+      setUploading(false);
+      setUploadStage("idle");
+      setUploadError(error instanceof Error ? error.message : "This upload could not be completed.");
+    });
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    setIsDropActive(false);
+    if (authenticated) acceptFiles(Array.from(event.dataTransfer.files)).catch((error) => {
+      setUploading(false);
+      setUploadStage("idle");
+      setUploadError(error instanceof Error ? error.message : "This upload could not be completed.");
+    });
   }
 
   return (
@@ -127,6 +129,7 @@ export default function Home() {
         <header className="topbar"><Link className="brand" href="/"><span className="brand-mark">C</span><span>claimwise</span></Link><nav className="top-nav" aria-label="Main navigation"><Link className="top-nav-link active" href="/">▦ Overview</Link><Link className="top-nav-link" href="/policies">▱ My policies <b>{policies.length}</b></Link><Link className="top-nav-link" href="/activity">⌁ Activity</Link><Link className="top-nav-link" href="/settings">⚙ Settings</Link></nav>{authenticated ? <div className="user-chip top-user"><span className="avatar">{userInitials}</span><span><strong>{userName}</strong><small>{userEmail}</small></span></div> : <Link className="outline-button top-login" href="/login">Sign in</Link>}</header>
         <div className="content-wrap">
           <section className="welcome-row"><div><p className="eyebrow">THURSDAY, 17 SEPTEMBER 2026</p><h1>Make sense of your cover.</h1><p className="intro">Your policies, decoded into clear answers you can act on.</p></div><button className="primary-button" onClick={beginUpload}><span>＋</span> {authenticated ? "Add policy" : "Sign in to add policy"}</button></section>
+          {authenticated && <div className={`upload-dropzone ${isDropActive ? "drop-active" : ""}`} onDragOver={(event) => { event.preventDefault(); setIsDropActive(true); }} onDragLeave={() => setIsDropActive(false)} onDrop={handleDrop} onClick={beginUpload} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") beginUpload(); }}><span className="upload-drop-icon">↑</span><strong>Drop policy or claim documents here</strong><span>PDF or image, max 30 MB each · upload multiple files together</span>{policies.length > 0 && <select aria-label="Add documents to an existing policy" value={selectedPolicyId} onChange={(event) => { event.stopPropagation(); setSelectedPolicyId(event.target.value); }} onClick={(event) => event.stopPropagation()}><option value="">Create a new policy</option>{policies.map((policy) => <option key={policy.id} value={policy.id}>Add to {policy.policy_name ?? "existing policy"}</option>)}</select>}{uploadStage !== "idle" && <div className="upload-progress" aria-live="polite"><div className="upload-progress-label"><span>{uploadStage === "uploading" ? "Uploading..." : uploadStage === "extracting" ? "Extracting text..." : "Ready ✓"}</span><span>{uploadProgress}%</span></div><div className="upload-progress-track"><span style={{ width: `${uploadProgress}%` }} /></div></div>}</div>}
           <section className="stats-grid" aria-label="Workspace summary">
             <div className="stat-card"><span className="stat-icon orange">▱</span><div><strong>{policies.length}</strong><small>Active policies</small></div><span className="stat-trend">Your account</span></div>
             <div className="stat-card"><span className="stat-icon blue">✦</span><div><strong>86%</strong><small>Documents understood</small></div><span className="stat-trend quiet">Across all policies</span></div>
@@ -134,12 +137,12 @@ export default function Home() {
           </section>
           <section className="section-heading"><div><p className="eyebrow">YOUR COVER</p><h2>My policies <span>{policies.length}</span></h2></div><Link className="text-button" href="/policies">View all <span>→</span></Link></section>
           <section className="policy-grid">
-            {policies.map((policy, index) => <article className="policy-card" key={policy.id}><div className={`policy-logo ${index % 2 === 0 ? "orange" : "blue"}`}>{(policy.insurer_name ?? "P").slice(0, 2)}</div><div className="policy-status"><span className={`status-dot ${policy.status === "completed" ? "done" : "processing"}`}></span>{policy.status}</div><p className="card-kicker">{policy.insurer_name ?? "Insurer not found"}</p><h3>{policy.policy_name ?? "Uploaded policy"}</h3><p className="muted">{policy.policy_type ?? "Policy type not found"}</p><div className="policy-details"><div><small>Policy number</small><strong>{policy.policy_number ?? "Not found"}</strong></div><div><small>Status</small><strong>{policy.status}</strong></div></div><div className="policy-card-actions"><Link className="card-action" href={`/policies/${policy.id}`}>Open policy →</Link><DeletePolicyButton policyId={policy.id} /></div></article>)}
+            {policies.map((policy, index) => <article className="policy-card" key={policy.id}><div className={`policy-logo ${index % 2 === 0 ? "orange" : "blue"}`}>{(policy.insurer_name ?? "P").slice(0, 2)}</div><div className="policy-status"><span className={`status-dot ${policy.status === "completed" ? "done" : "processing"}`}></span>{policy.status}</div><p className="card-kicker">{policy.insurer_name ?? "Insurer not found"}</p><h3>{policy.policy_name ?? "Uploaded policy"}</h3><p className="muted">{policy.policy_type ?? "Policy type not found"}</p><div className="policy-details"><div><small>Policy number</small><strong>{policy.policy_number ?? "Not found"}</strong></div><div><small>Documents</small><strong>{policy.policy_documents?.length ?? 0}</strong></div></div><div className="policy-card-actions"><Link className="card-action" href={`/policies/${policy.id}`}>Open policy →</Link><DeletePolicyButton policyId={policy.id} /></div></article>)}
             <button className="add-card" onClick={beginUpload}><span className="add-circle">＋</span><strong>{authenticated ? "Upload another policy" : "Sign in to upload"}</strong><small>PDF, JPG, PNG, or DOCX · 30 MB max</small></button>
           </section>
-          <section className="overview-links"><Link className="panel overview-link" href="/policies/optima-secure/analysis"><p className="eyebrow">LATEST ANALYSIS</p><h2>Open policy analysis <span>↗</span></h2><p>Coverage, limits, exclusions, and source references.</p></Link><Link className="panel overview-link" href="/activity"><p className="eyebrow">RECENTLY</p><h2>View activity history <span>→</span></h2><p>Uploads, analysis events, questions, and updates.</p></Link></section>
+          <section className="overview-links"><Link className="panel overview-link" href="/policies/optima-secure/analysis"><p className="eyebrow">LATEST ANALYSIS</p><h2>Open policy analysis <span>→</span></h2><p>Coverage, limits, exclusions, and source references.</p></Link><Link className="panel overview-link" href="/activity"><p className="eyebrow">RECENTLY</p><h2>View activity history <span>→</span></h2><p>Uploads, analysis events, questions, and updates.</p></Link></section>
           <section className="upload-banner"><div className="upload-copy"><span className="upload-icon">↑</span><div><h2>Have another policy?</h2><p>Upload a PDF, JPG, PNG, or DOCX and ClaimWise will turn it into something you can understand.</p></div></div><button className="secondary-button" onClick={beginUpload}>{authenticated ? "Upload document" : "Sign in to upload"} <span>↗</span></button></section>
-          <input ref={inputRef} type="file" accept={getUploadAcceptAttribute()} onChange={handleFileChange} hidden />
+          <input ref={inputRef} type="file" accept={getUploadAcceptAttribute()} multiple onChange={handleFileChange} hidden />
           {(fileName || uploadError) && <div className="file-toast"><span>{uploadError ? "!" : uploading ? "…" : "✓"}</span>{uploadError || (uploading ? `Uploading ${fileName}...` : `Uploaded: ${fileName}`)}<button onClick={() => { setFileName(""); setUploadError(""); }}>×</button></div>}
         </div>
       </main>

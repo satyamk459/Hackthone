@@ -17,6 +17,17 @@ export async function POST(request: Request) {
   const mimeType = typeof body?.mimeType === "string" ? body.mimeType : "application/octet-stream";
   const fileSize = typeof body?.fileSize === "number" ? body.fileSize : 0;
   const userId = authData.user.id;
+  const existingPolicyId = typeof body?.policyId === "string" ? body.policyId : "";
+  const requestedVersionId = typeof body?.versionId === "string" ? body.versionId : "";
+
+  if (existingPolicyId) {
+    const { data: existingPolicy } = await supabase.from("policies").select("id").eq("id", existingPolicyId).eq("user_id", userId).single();
+    const versionQuery = supabase.from("policy_versions").select("id").eq("policy_id", existingPolicyId).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    const { data: existingVersion } = requestedVersionId ? await supabase.from("policy_versions").select("id").eq("id", requestedVersionId).eq("policy_id", existingPolicyId).single() : await versionQuery;
+    if (!existingPolicy || !existingVersion) return NextResponse.json({ error: "The selected policy could not be found." }, { status: 404 });
+    const storagePath = `${userId}/${existingPolicyId}/${existingVersion.id}/${safeFileName(fileName)}`;
+    return NextResponse.json({ policyId: existingPolicyId, versionId: existingVersion.id, storagePath, fileName, mimeType, fileSize, isNewPolicy: false }, { status: 201 });
+  }
   const policyName = fileName.replace(/\.(pdf|jpe?g|png|docx)$/i, "") || "Uploaded policy";
 
   const { data: policy, error: policyError } = await supabase
@@ -37,5 +48,5 @@ export async function POST(request: Request) {
   }
 
   const storagePath = `${userId}/${policy.id}/${version.id}/${safeFileName(fileName)}`;
-  return NextResponse.json({ policyId: policy.id, versionId: version.id, storagePath, fileName, mimeType, fileSize }, { status: 201 });
+  return NextResponse.json({ policyId: policy.id, versionId: version.id, storagePath, fileName, mimeType, fileSize, isNewPolicy: true }, { status: 201 });
 }

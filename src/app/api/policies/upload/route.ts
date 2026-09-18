@@ -11,7 +11,7 @@ export async function GET() {
 
   const { data, error } = await supabase
     .from("policies")
-    .select("id, insurer_name, policy_name, policy_number, policy_type, status, created_at")
+    .select("id, insurer_name, policy_name, policy_number, policy_type, status, created_at, policy_documents(file_name, processing_status)")
     .eq("user_id", authData.user.id)
     .order("created_at", { ascending: false });
   if (error) return NextResponse.json({ error: "Policies could not be loaded." }, { status: 500 });

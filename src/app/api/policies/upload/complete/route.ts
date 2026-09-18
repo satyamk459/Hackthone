@@ -15,6 +15,7 @@ export async function POST(request: Request) {
   const fileName = typeof body?.fileName === "string" ? body.fileName : "uploaded-policy";
   const mimeType = typeof body?.mimeType === "string" ? body.mimeType : "application/octet-stream";
   const fileSize = typeof body?.fileSize === "number" ? body.fileSize : 0;
+  const isNewPolicy = body?.isNewPolicy === true;
   const expectedPrefix = `${authData.user.id}/${policyId}/${versionId}/`;
   if (!policyId || !versionId || !storagePath.startsWith(expectedPrefix)) return NextResponse.json({ error: "The upload details are invalid." }, { status: 400 });
 
@@ -33,8 +34,10 @@ export async function POST(request: Request) {
   });
   if (documentError) {
     await supabase.storage.from("insurance-documents").remove([storagePath]);
-    await supabase.from("policy_versions").delete().eq("id", versionId);
-    await supabase.from("policies").delete().eq("id", policyId);
+    if (isNewPolicy) {
+      await supabase.from("policy_versions").delete().eq("id", versionId);
+      await supabase.from("policies").delete().eq("id", policyId);
+    }
     return NextResponse.json({ error: "We could not register this policy document." }, { status: 500 });
   }
 

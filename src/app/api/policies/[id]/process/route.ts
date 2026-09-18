@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 const GEMINI_MODEL = "gemini-3.6-flash";
+const GEMINI_SYSTEM_INSTRUCTION = "You are ClaimWise AI, an insurance claims assistant. Reply in the same language as the user when answering later questions. Explain insurance policies, coverage, exclusions, claim eligibility, required documents, and next steps simply. Base conclusions on the uploaded documents, never guess, and clearly say when something cannot be determined. This is informational guidance, not a claim decision.";
 
 const analysisPrompt = `You are ClaimWise, an insurance document analyst. Analyze only the uploaded insurance document. It may be a PDF, JPG, PNG, or DOCX file. Return valid JSON and no markdown with this exact shape:
 {
@@ -50,51 +51,50 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
 
   const { data: document, error: documentError } = await supabase
     .from("policy_documents")
-    .select("id, storage_path, version_id, mime_type")
+    .select("id, storage_path, version_id, mime_type, file_name")
     .eq("policy_id", policyId)
     .eq("user_id", authData.user.id)
-    .order("uploaded_at", { ascending: false })
-    .limit(1)
-    .single();
+    .order("uploaded_at", { ascending: true });
 
-  if (documentError || !document) {
+  if (documentError || !document?.length) {
     return NextResponse.json({ error: "Policy document not found." }, { status: 404 });
   }
 
-  await supabase.from("policy_documents").update({ processing_status: "analyzing" }).eq("id", document.id);
+  await supabase.from("policy_documents").update({ processing_status: "analyzing" }).eq("policy_id", policyId).eq("user_id", authData.user.id);
   await supabase.from("policies").update({ status: "analyzing" }).eq("id", policyId).eq("user_id", authData.user.id);
 
   try {
-    const { data: file, error: downloadError } = await supabase.storage.from("insurance-documents").download(document.storage_path);
-    if (downloadError || !file) throw new Error("The stored policy document could not be read.");
-
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new Error("Gemini is not configured on the server.");
 
-    const bytes = Buffer.from(await file.arrayBuffer()).toString("base64");
-    const mimeType = document.mime_type || "application/pdf";
-    const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: GEMINI_MODEL });
-    const result = await model.generateContent([{ inlineData: { mimeType, data: bytes } }, analysisPrompt]);
+    const uploadedDocuments = [];
+    for (const item of document) {
+      const { data: file, error: downloadError } = await supabase.storage.from("insurance-documents").download(item.storage_path);
+      if (downloadError || !file) throw new Error(`The stored document ${item.file_name} could not be read.`);
+      uploadedDocuments.push({ inlineData: { mimeType: item.mime_type || "application/pdf", data: Buffer.from(await file.arrayBuffer()).toString("base64") } });
+    }
+    const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: GEMINI_MODEL, systemInstruction: GEMINI_SYSTEM_INSTRUCTION });
+    const result = await model.generateContent([...uploadedDocuments, analysisPrompt]);
     const analysis = parseModelJson(result.response.text());
 
     const { error: analysisError } = await supabase.from("policy_analysis").upsert({
       policy_id: policyId,
-      version_id: document.version_id,
+      version_id: document[0].version_id,
       analysis_json: analysis,
       model_name: GEMINI_MODEL,
       analysis_version: "1",
     }, { onConflict: "policy_id,version_id" });
     if (analysisError) throw new Error("Analysis could not be saved.");
 
-    await supabase.from("policy_documents").update({ processing_status: "completed", processed_at: new Date().toISOString(), processing_error: null }).eq("id", document.id);
+    await supabase.from("policy_documents").update({ processing_status: "completed", processed_at: new Date().toISOString(), processing_error: null }).eq("policy_id", policyId).eq("user_id", authData.user.id);
     await supabase.from("policies").update({ status: "completed", insurer_name: analysis.insurer_name, policy_name: analysis.policy_name ?? undefined, policy_number: analysis.policy_number, policy_type: analysis.policy_type }).eq("id", policyId).eq("user_id", authData.user.id);
     await supabase.from("activity_history").insert({ user_id: authData.user.id, policy_id: policyId, event_type: "analysis_completed", event_data: { model: GEMINI_MODEL } });
 
     return NextResponse.json({ status: "completed", analysis });
   } catch (error) {
     const message = error instanceof Error ? error.message : "The policy could not be analyzed.";
-    console.error("Policy analysis failed", { policyId, documentId: document.id, model: GEMINI_MODEL, message });
-    await supabase.from("policy_documents").update({ processing_status: "failed", processing_error: message }).eq("id", document.id);
+    console.error("Policy analysis failed", { policyId, documentIds: document?.map((item) => item.id), model: GEMINI_MODEL, message });
+    await supabase.from("policy_documents").update({ processing_status: "failed", processing_error: message }).eq("policy_id", policyId).eq("user_id", authData.user.id);
     await supabase.from("policies").update({ status: "failed" }).eq("id", policyId).eq("user_id", authData.user.id);
     return NextResponse.json({ error: "We could not analyze this document. Check the uploaded file and try again." }, { status: 502 });
   }
