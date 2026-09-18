@@ -50,7 +50,7 @@ export function UploadDocument({ policies = [], onboarding = false }: UploadDocu
     if (!processResponse.ok) throw new Error(processResult.error ?? "Analysis could not be completed. Please try again.");
     setUploadStage("ready");
     setUploadProgress(100);
-    router.push("/");
+    router.push("/overview");
   }
 
   function handleFiles(files: File[]) {
