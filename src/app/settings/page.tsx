@@ -1,4 +1,4 @@
-﻿import Link from "next/link";
+import Link from "next/link";
 import { PageFrame } from "@/components/PageFrame";
 import { SignOutButton } from "@/components/SignOutButton";
 import { PasswordForm } from "@/components/PasswordForm";
